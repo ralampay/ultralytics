@@ -8,7 +8,7 @@ import torch
 import torch.nn as nn
 
 __all__ = ('Conv', 'Conv2', 'LightConv', 'DWConv', 'DWConvTranspose2d', 'ConvTranspose', 'Focus', 'GhostConv',
-           'ChannelAttention', 'SpatialAttention', 'CBAM', 'Concat', 'RepConv')
+           'ChannelAttention', 'SpatialAttention', 'CBAM', 'Concat', 'RepConv', 'DoubleConv')
 
 
 def autopad(k, p=None, d=1):  # kernel, padding, dilation
@@ -19,6 +19,32 @@ def autopad(k, p=None, d=1):  # kernel, padding, dilation
         p = k // 2 if isinstance(k, int) else [x // 2 for x in k]  # auto-pad
     return p
 
+
+class DoubleConv(nn.Module):
+    default_act = nn.ReLU()
+
+    def __init__(self, c1, c2, k=1, s=1, p=None, g=1, d=1, act=True, bias=False):
+        super(DoubleConv, self).__init__()
+        self.conv = nn.Conv2d(c1, c2, k, s, autopad(k, p, d), groups=g, dilation=d, bias=False)
+        self.bn = nn.BatchNorm2d(c2)
+        self.act = self.default_act if act is True else act if isinstance(act, nn.Module) else nn.Identity()
+
+        self.conv2 = nn.Conv2d(c2, c2, 1, 1, autopad(1, 0, d), groups=g, dilation=d, bias=False)
+        self.bn2 = nn.BatchNorm2d(c2)
+        self.act2 = self.default_act if act is True else act if isinstance(act, nn.Module) else nn.Identity()
+
+    def forward(self, x):
+        x = self.act(self.bn(self.conv(x)))
+        x = self.act2(self.bn2(self.conv2(x)))
+
+        return x
+
+    def forward_fuse(self, x):
+        x = self.act(self.conv(x))
+        x = self.act2(self.conv2(x))
+
+        return x
+    
 
 class Conv(nn.Module):
     """Standard convolution with args(ch_in, ch_out, kernel, stride, padding, groups, dilation, activation)."""
