@@ -10,6 +10,17 @@ Ultralytics Solutions provide cutting-edge applications of YOLO models, offering
 
 ![Ultralytics Solutions Thumbnail](https://github.com/ultralytics/docs/releases/download/0/ultralytics-solutions-thumbnail.avif)
 
+<p align="center">
+  <br>
+  <iframe loading="lazy" width="720" height="405" src="https://www.youtube.com/embed/bjkt5OE_ANA"
+    title="YouTube video player" frameborder="0"
+    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+    allowfullscreen>
+  </iframe>
+  <br>
+  <strong>Watch:</strong> How to Run Ultralytics Solutions from the Command Line (CLI) | Ultralytics YOLO11 🚀
+</p>
+
 ## Solutions
 
 Here's our curated list of Ultralytics solutions that can be used to create awesome [computer vision](https://www.ultralytics.com/glossary/computer-vision-cv) projects.
@@ -50,6 +61,10 @@ Here's our curated list of Ultralytics solutions that can be used to create awes
         ```
 
 ## Arguments
+
+!!! tip "Predict args"
+
+    Solutions also support some of the arguments from `predict`, including parameters such as `conf`, `line_width`, `tracker`, `model`, `show`, and `classes`.
 
 {% include "macros/solutions-args.md" %}
 
