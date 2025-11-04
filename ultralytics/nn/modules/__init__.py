@@ -17,6 +17,10 @@ Examples:
     >>> os.system(f"onnxslim {f} {f} && open {f}")  # pip install onnxslim
 """
 
+from .custom_blocks import (
+    MyConvBlock
+)
+
 from .block import (
     C1,
     C2,
@@ -105,6 +109,7 @@ from .transformer import (
 __all__ = (
     "Conv",
     "Conv2",
+    "MyConvBlock",
     "LightConv",
     "RepConv",
     "DWConv",
