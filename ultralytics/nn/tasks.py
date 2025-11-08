@@ -18,7 +18,7 @@ from ultralytics.nn.modules import (
     C2PSA,
     C3,
     C3TR,
-    ConvAttnDeform,
+    ConvAttnLite,
     ELAN1,
     OBB,
     PSA,
@@ -1522,7 +1522,7 @@ def parse_model(d, ch, verbose=True):
         {
             Classify,
             Conv,
-            ConvAttnDeform,
+            ConvAttnLite,
             ConvTranspose,
             GhostConv,
             Bottleneck,
