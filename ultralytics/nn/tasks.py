@@ -74,6 +74,7 @@ from ultralytics.nn.modules import (
     YOLOESegment,
     YOLOESegment26,
     v10Detect,
+    MyConvBlock,
 )
 from ultralytics.utils import (
     DEFAULT_CFG_DICT,
