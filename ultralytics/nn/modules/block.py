@@ -60,6 +60,55 @@ __all__ = (
 )
 
 
+# copied from specs
+class CustomDoubleConv(nn.Module):
+    def __init__(self, c1: int, c2: int):
+        super().__init__()
+        self.block = nn.Sequential(
+            nn.Conv2d(c1, c2, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(c2),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(c2, c2, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(c2),
+            nn.ReLU(inplace=True),
+        )
+    def forward(self, x: torch.Tensor)-> torch.Tensor:
+    return self.block(x)
+
+class DoubleConvBackbone(nn.Module):
+    def __init__(self, c1: int, c2: int = 1024, out_channels=(256, 512, 1024)):
+        super().__init__()
+        self.stem = nn.Sequential(
+            nn.Conv2d(c1, 64, kernel_size=3, stride=2, padding=1, bias=False),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+        )
+
+        self.stage1 = CustomDoubleConv(64, 128)
+        self.down1 = nn.MaxPool2d(2)
+        self.stage2 = CustomDoubleConv(128, 256)
+        self.down2 = nn.MaxPool2d(2)
+        self.stage3 = CustomDoubleConv(256, 512)
+        self.down3 = nn.MaxPool2d(2)
+        self.stage4 = CustomDoubleConv(512, 1024)
+        self.p3_proj = nn.Conv2d(256, out_channels[0], kernel_size=1)
+        self.p4_proj = nn.Conv2d(512, out_channels[1], kernel_size=1)
+        self.p5_proj = nn.Conv2d(1024, out_channels[2], kernel_size=1)
+        self.c2 = c2
+
+    def forward(self, x: torch.Tensor):
+        x = self.stem(x)
+        x = self.stage1(x)
+        x = self.down1(x)
+        p3 = self.stage2(x)
+        x = self.down2(p3)
+        p4 = self.stage3(x)
+        x = self.down3(p4)
+        2
+        p5 = self.stage4(x)
+    return [self.p3_proj(p3), self.p4_proj(p4), self.p5_proj(p5)]
+
+
 class DFL(nn.Module):
     """Integral module of Distribution Focal Loss (DFL).
 

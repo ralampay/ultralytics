@@ -10,6 +10,8 @@ from pathlib import Path
 import torch
 import torch.nn as nn
 
+from ultralytics.nn.modules.block import DoubleConvBackbone
+
 from ultralytics.nn.autobackend import check_class_names
 from ultralytics.nn.modules import (
     AIFI,
@@ -78,6 +80,7 @@ from ultralytics.nn.modules import (
     v10Detect,
     MyConvBlock,
 )
+
 from ultralytics.utils import DEFAULT_CFG_DICT, LOGGER, WINDOWS, YAML, colorstr, emojis
 from ultralytics.utils.checks import check_requirements, check_suffix, check_yaml
 from ultralytics.utils.loss import (
@@ -1726,6 +1729,9 @@ def parse_model(d, ch, verbose=True):
             c2 = args[0]
             c1 = ch[f]
             args = [*args[1:]]
+        elif m is DoubleConvBackbone:
+            c1, c2 = ch[f], args[0] 
+            args = [c1, *args]      
         else:
             c2 = ch[f]
 
