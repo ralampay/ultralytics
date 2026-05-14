@@ -87,9 +87,10 @@ class CustomDoubleConv(nn.Module):
                          Higher = fewer params, lower = more expressive.
     """
  
-    def __init__(self, c1: int, c2: int, reduction: int = 4):
+    def __init__(self, c1: int, c2: int, reduction: int = 4, drop_path: float = 0.0):
         super().__init__()
- 
+        self.drop_path = DropPath(drop_path)
+
         # ── Conv 1: feature extraction  (c1 → c2) ───────────────────────────
         self.conv1 = nn.Sequential(
             nn.Conv2d(c1, c2, kernel_size=3, padding=1, bias=False),
@@ -117,7 +118,12 @@ class CustomDoubleConv(nn.Module):
         self.conv2 = nn.Sequential(
             nn.Conv2d(c2, c2, kernel_size=3, padding=1, bias=False),
             nn.BatchNorm2d(c2),
-            nn.ReLU(inplace=True),
+        )
+
+        # ── Block-level residual shortcut (input → output) ───────────────────
+        self.shortcut = (
+            nn.Sequential(nn.Conv2d(c1, c2, kernel_size=1, bias=False), nn.BatchNorm2d(c2))
+            if c1 != c2 else nn.Identity()
         )
  
     # ── Haar DWT ─────────────────────────────────────────────────────────────
@@ -233,10 +239,11 @@ class CustomDoubleConv(nn.Module):
         Returns:
             (B, c2, H, W)
         """
-        x = self.conv1(x)           # extract features       (c1 → c2)
-        x = self._wavelet_fusion(x) # multi-freq fusion       (c2 → c2)
-        x = self.conv2(x)           # refine fused features   (c2 → c2)
-        return x
+        identity = self.shortcut(x)
+        x = self.conv1(x)                                   # c1 → c2
+        x = self._wavelet_fusion(x)                         # c2 → c2
+        x = self.conv2(x)                                   # c2 → c2
+        return F.relu(identity + self.drop_path(x), inplace=True)
  
  
 # ─────────────────────────────────────────────────────────────────────────────

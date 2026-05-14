@@ -7,7 +7,7 @@ def main():
         data="skyfusion.v1i.yolov11/data.yaml",
         epochs=100,
         imgsz=512,
-        batch=4,
+        batch=8,
         device=0,
         project="runs/final_project",
         name="doubleconv_exp",
