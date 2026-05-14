@@ -9,7 +9,7 @@ try:
     model = YOLO("ultralytics/cfg/models/ext/doubleconv-yolo.yaml")
     print("Model loaded successfully")
 except Exception as e:
-    print(f"Failed to load model: {e}")
+    print(f"Failed to load model {e}")
     exit()
 
 x = torch.randn(1, 3, 640, 640)
@@ -23,11 +23,11 @@ else:
 print(model.model)
 
 # print model summmary 
-print("\n--- Model Summary ---")
+print("\n=====Model Summary=====")
 model.info()
 
 # run dummy forward pass 
-print("\n--- Testing Forward Pass ---")
+print("\n======Testing Dummy Img=====")
 try:
     dummy_input = torch.randn(1, 3, 640, 640) #fake image
     output = model.model(dummy_input)
