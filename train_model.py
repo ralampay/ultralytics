@@ -4,10 +4,10 @@ def main():
     model = YOLO("ultralytics/cfg/models/ext/doubleconv-yolo.yaml")
 
     results = model.train(
-        data="skyfusion-dataset/data.yaml",
+        data="skyfusion.v1i.yolov11/data.yaml",
         epochs=10,
         imgsz=640,
-        batch=16,
+        batch=4,
         device=0,
         project="runs/final_project",
         name="doubleconv_exp",
