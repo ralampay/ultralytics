@@ -1,2 +1,5 @@
 skyfusion-dataset/
 skyfusion.v1i.yolov11/
+
+
+*.pt

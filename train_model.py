@@ -6,7 +6,7 @@ def main():
     results = model.train(
         data="skyfusion.v1i.yolov11/data.yaml",
         epochs=100,
-        imgsz=512,
+        imgsz=640,
         batch=8,
         device=0,
         project="runs/final_project",
