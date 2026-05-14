@@ -73,7 +73,7 @@ class CustomDoubleConv(nn.Module):
             nn.ReLU(inplace=True),
         )
     def forward(self, x: torch.Tensor)-> torch.Tensor:
-    return self.block(x)
+        return self.block(x)
 
 class DoubleConvBackbone(nn.Module):
     def __init__(self, c1: int, c2: int = 1024, out_channels=(256, 512, 1024)):
@@ -106,7 +106,7 @@ class DoubleConvBackbone(nn.Module):
         x = self.down3(p4)
         2
         p5 = self.stage4(x)
-    return [self.p3_proj(p3), self.p4_proj(p4), self.p5_proj(p5)]
+        return [self.p3_proj(p3), self.p4_proj(p4), self.p5_proj(p5)]
 
 
 class DFL(nn.Module):
