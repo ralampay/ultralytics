@@ -59,7 +59,287 @@ __all__ = (
     "TorchVision",
 )
 
-
+ 
+def _make_haar_filters():
+    """Returns (dwt_filters, idwt_filters) as plain tensors (not buffered)."""
+    ll = torch.tensor([[1.,  1.], [ 1.,  1.]]) * 0.5   # smooth
+    lh = torch.tensor([[1.,  1.], [-1., -1.]]) * 0.5   # horizontal edges
+    hl = torch.tensor([[1., -1.], [ 1., -1.]]) * 0.5   # vertical edges
+    hh = torch.tensor([[1., -1.], [-1.,  1.]]) * 0.5   # texture / corners
+    dwt  = torch.stack([ll, lh, hl, hh]).unsqueeze(1)        # (4, 1, 2, 2)
+    idwt = torch.stack([ll, lh, hl, hh]).unsqueeze(0) * 4.0  # (1, 4, 2, 2)
+    return dwt, idwt
+ 
+ 
+# ─────────────────────────────────────────────────────────────────────────────
+# WaveletDoubleConv
+# ─────────────────────────────────────────────────────────────────────────────
+ 
+class WaveletDoubleConv(nn.Module):
+    """
+    Drop-in replacement for CustomDoubleConv.
+    Inserts Haar DWT → band attention → IDWT between the two conv layers.
+ 
+    Args:
+        c1        (int): Input channels.
+        c2        (int): Output channels.
+        reduction (int): Squeeze ratio for band-attention FC. Default 4.
+                         Higher = fewer params, lower = more expressive.
+    """
+ 
+    def __init__(self, c1: int, c2: int, reduction: int = 4):
+        super().__init__()
+ 
+        # ── Conv 1: feature extraction  (c1 → c2) ───────────────────────────
+        self.conv1 = nn.Sequential(
+            nn.Conv2d(c1, c2, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(c2),
+            nn.ReLU(inplace=True),
+        )
+ 
+        # ── Haar wavelet filters (fixed, not learned) ────────────────────────
+        dwt_f, idwt_f = _make_haar_filters()
+        self.register_buffer("dwt_filters",  dwt_f)   # (4, 1, 2, 2)
+        self.register_buffer("idwt_filters", idwt_f)  # (1, 4, 2, 2)
+ 
+        # ── Band attention: learns which frequency matters most ───────────────
+        #   Input : concatenated GAP of [LL, LH, HL, HH] → (B, 4·c2)
+        #   Output: 4·c2 weights → reshaped to (B, 4, c2, 1, 1)
+        #           softmax over dim=1 → per-channel band weights
+        squeeze = max(c2 * 4 // reduction, 8)
+        self.band_attention = nn.Sequential(
+            nn.Linear(c2 * 4, squeeze, bias=False),   # squeeze
+            nn.ReLU(inplace=True),
+            nn.Linear(squeeze, c2 * 4, bias=False),   # excite
+        )
+ 
+        # ── Conv 2: refinement after wavelet fusion  (c2 → c2) ──────────────
+        self.conv2 = nn.Sequential(
+            nn.Conv2d(c2, c2, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(c2),
+            nn.ReLU(inplace=True),
+        )
+ 
+    # ── Haar DWT ─────────────────────────────────────────────────────────────
+ 
+    def _dwt(self, x: torch.Tensor):
+        """
+        Haar Discrete Wavelet Transform.
+        Decomposes x into 4 sub-bands via strided conv (stride=2).
+ 
+        Args:
+            x: (B, C, H, W)
+        Returns:
+            ll, lh, hl, hh — each (B, C, H/2, W/2)
+        """
+        B, C, H, W = x.shape
+        # Flatten batch+channel → treat each channel independently
+        x_flat = x.reshape(B * C, 1, H, W)
+        # Apply 4 Haar filters with stride 2 → (B*C, 4, H/2, W/2)
+        out = F.conv2d(x_flat, self.dwt_filters, stride=2)
+        # Restore batch and channel dims → (B, C, 4, H/2, W/2)
+        out = out.view(B, C, 4, H // 2, W // 2)
+        ll = out[:, :, 0]   # smooth / low-freq
+        lh = out[:, :, 1]   # horizontal edges
+        hl = out[:, :, 2]   # vertical edges
+        hh = out[:, :, 3]   # texture / corners
+        return ll, lh, hl, hh
+ 
+    # ── Haar IDWT ────────────────────────────────────────────────────────────
+ 
+    def _idwt(self, ll, lh, hl, hh):
+        """
+        Haar Inverse Discrete Wavelet Transform.
+        Reconstructs the spatial feature map from 4 sub-bands.
+        Lossless when bands are unmodified; approximate after attention fusion.
+ 
+        Args:
+            ll, lh, hl, hh — each (B, C, H, W)
+        Returns:
+            reconstructed: (B, C, H*2, W*2)
+        """
+        B, C, H, W = ll.shape
+        # Stack bands → (B*C, 4, H, W)
+        bands = torch.stack([ll, lh, hl, hh], dim=2).view(B * C, 4, H, W)
+        # Each band contributes via its transpose filter (upsamples ×2)
+        rec = sum(
+            F.conv_transpose2d(bands[:, i:i+1], self.idwt_filters[:, i:i+1], stride=2)
+            for i in range(4)
+        )
+        return rec.view(B, C, H * 2, W * 2)
+ 
+    # ── Wavelet Fusion ───────────────────────────────────────────────────────
+ 
+    def _wavelet_fusion(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Full wavelet-domain feature fusion:
+          1. DWT        — split x into LL / LH / HL / HH sub-bands
+          2. GAP        — global average pool each band
+          3. FC + Softmax — learn per-channel band importance weights
+          4. Weighted sum — blend bands adaptively
+          5. Residual   — add fused signal back to each band
+          6. IDWT       — reconstruct to original spatial size
+          7. Skip + ReLU — residual add with the input x
+ 
+        Args:
+            x: (B, C, H, W)  — H and W must be even
+        Returns:
+            (B, C, H, W)
+        """
+        B, C, _, _ = x.shape
+ 
+        # 1. Wavelet decomposition → 4 frequency sub-bands
+        ll, lh, hl, hh = self._dwt(x)          # each (B, C, H/2, W/2)
+ 
+        # 2. Global average pool each sub-band → scalar per channel
+        #    Concat all 4 bands → (B, 4·C)
+        band_descriptors = torch.cat([
+            ll.mean(dim=(-2, -1)),              # (B, C) — smooth / structure
+            lh.mean(dim=(-2, -1)),              # (B, C) — horizontal edges
+            hl.mean(dim=(-2, -1)),              # (B, C) — vertical edges
+            hh.mean(dim=(-2, -1)),              # (B, C) — texture / corners
+        ], dim=1)                               # (B, 4·C)
+ 
+        # 3. FC squeeze-excite → band importance weights
+        #    Softmax over band dim → weights sum to 1.0 per channel
+        band_weights = (
+            self.band_attention(band_descriptors)   # (B, 4·C)
+            .view(B, 4, C, 1, 1)                    # (B, 4, C, 1, 1)
+            .softmax(dim=1)                         # normalize across 4 bands
+        )
+ 
+        # 4. Stack bands and compute weighted sum → single fused band
+        all_bands  = torch.stack([ll, lh, hl, hh], dim=1)  # (B, 4, C, H/2, W/2)
+        fused_band = (all_bands * band_weights).sum(dim=1)  # (B,    C, H/2, W/2)
+ 
+        # 5. Add fused signal back to each individual band (residual in wavelet domain)
+        ll = ll + fused_band
+        lh = lh + fused_band
+        hl = hl + fused_band
+        hh = hh + fused_band
+ 
+        # 6. Reconstruct spatial feature map from enhanced bands
+        reconstructed = self._idwt(ll, lh, hl, hh)     # (B, C, H, W)
+ 
+        # 7. Residual add with the wavelet block's input + activation
+        return F.relu(reconstructed + x, inplace=True)  # (B, C, H, W)
+ 
+    # ── Forward ──────────────────────────────────────────────────────────────
+ 
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            x: (B, c1, H, W)  —  H and W must be even
+        Returns:
+            (B, c2, H, W)
+        """
+        x = self.conv1(x)           # extract features       (c1 → c2)
+        x = self._wavelet_fusion(x) # multi-freq fusion       (c2 → c2)
+        x = self.conv2(x)           # refine fused features   (c2 → c2)
+        return x
+ 
+ 
+# ─────────────────────────────────────────────────────────────────────────────
+# WaveletBackbone
+# ─────────────────────────────────────────────────────────────────────────────
+ 
+class WaveletBackbone(nn.Module):
+    """
+    Encoder backbone built from WaveletDoubleConv blocks.
+    Outputs FPN-ready multi-scale feature maps P3, P4, P5.
+ 
+    Architecture:
+        Input (B, c1, H, W)
+          │
+          ▼
+        Stem  Conv3x3 stride-2  64ch              → H/2
+          │
+          ▼
+        Stage1  WaveletDoubleConv  64  → 128      → H/2
+        MaxPool2d                                  → H/4
+          │
+          ▼
+        Stage2  WaveletDoubleConv  128 → 256      → H/4
+          ├──► P3  (1×1 proj → out_channels[0])   stride /8
+        MaxPool2d                                  → H/8
+          │
+          ▼
+        Stage3  WaveletDoubleConv  256 → 512      → H/8
+          ├──► P4  (1×1 proj → out_channels[1])   stride /16
+        MaxPool2d                                  → H/16
+          │
+          ▼
+        Stage4  WaveletDoubleConv  512 → 1024     → H/16
+          └──► P5  (1×1 proj → out_channels[2])   stride /32
+ 
+    Args:
+        c1          (int)  : Input image channels. Default 3 (RGB).
+        out_channels (tuple): (P3_ch, P4_ch, P5_ch). Default (256, 512, 1024).
+        reduction   (int)  : Band-attention squeeze ratio. Default 4.
+    """
+ 
+    def __init__(
+        self,
+        c1:           int   = 3,
+        out_channels: tuple = (256, 512, 1024),
+        reduction:    int   = 4,
+    ):
+        super().__init__()
+ 
+        # ── Stem: initial stride-2 conv (no wavelet — input may be odd-sized) ─
+        self.stem = nn.Sequential(
+            nn.Conv2d(c1, 64, kernel_size=3, stride=2, padding=1, bias=False),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+        )                                                   # → H/2, 64ch
+ 
+        # ── Encoder stages ───────────────────────────────────────────────────
+        self.stage1 = WaveletDoubleConv(64,  128, reduction)
+        self.down1  = nn.MaxPool2d(2)                       # → H/4
+ 
+        self.stage2 = WaveletDoubleConv(128, 256, reduction)
+        self.down2  = nn.MaxPool2d(2)                       # → H/8
+ 
+        self.stage3 = WaveletDoubleConv(256, 512, reduction)
+        self.down3  = nn.MaxPool2d(2)                       # → H/16
+ 
+        self.stage4 = WaveletDoubleConv(512, 1024, reduction)
+                                                            # → H/32
+ 
+        # ── Lateral 1×1 projections to FPN channel targets ──────────────────
+        self.p3_proj = nn.Conv2d(256,  out_channels[0], kernel_size=1)
+        self.p4_proj = nn.Conv2d(512,  out_channels[1], kernel_size=1)
+        self.p5_proj = nn.Conv2d(1024, out_channels[2], kernel_size=1)
+ 
+    def forward(self, x: torch.Tensor):
+        """
+        Args:
+            x: (B, c1, H, W)
+        Returns:
+            [P3, P4, P5]
+              P3: (B, out_channels[0], H/8,  W/8)
+              P4: (B, out_channels[1], H/16, W/16)
+              P5: (B, out_channels[2], H/32, W/32)
+        """
+        x  = self.stem(x)       # (B,  64, H/2,  W/2)
+ 
+        x  = self.stage1(x)     # (B, 128, H/2,  W/2)
+        x  = self.down1(x)      # (B, 128, H/4,  W/4)
+ 
+        p3 = self.stage2(x)     # (B, 256, H/4,  W/4)  ← P3 source
+        x  = self.down2(p3)     # (B, 256, H/8,  W/8)
+ 
+        p4 = self.stage3(x)     # (B, 512, H/8,  W/8)  ← P4 source
+        x  = self.down3(p4)     # (B, 512, H/16, W/16)
+ 
+        p5 = self.stage4(x)     # (B,1024, H/16, W/16) ← P5 source
+ 
+        return [
+            self.p3_proj(p3),   # (B, out_channels[0], H/8,  W/8)
+            self.p4_proj(p4),   # (B, out_channels[1], H/16, W/16)
+            self.p5_proj(p5),   # (B, out_channels[2], H/32, W/32)
+        ]
+ 
 # copied from specs
 class CustomDoubleConv(nn.Module):
     def __init__(self, c1: int, c2: int):
