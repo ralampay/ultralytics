@@ -75,9 +75,9 @@ def _make_haar_filters():
 # WaveletDoubleConv
 # ─────────────────────────────────────────────────────────────────────────────
  
-class WaveletDoubleConv(nn.Module):
+class CustomDoubleConv(nn.Module):
     """
-    Drop-in replacement for CustomDoubleConv.
+    Works as a Wavelet Double Conv block: two conv layers with a wavelet fusion in between.
     Inserts Haar DWT → band attention → IDWT between the two conv layers.
  
     Args:
@@ -243,9 +243,10 @@ class WaveletDoubleConv(nn.Module):
 # WaveletBackbone
 # ─────────────────────────────────────────────────────────────────────────────
  
-class WaveletBackbone(nn.Module):
+class DoubleConvBackbone(nn.Module):
     """
-    Encoder backbone built from WaveletDoubleConv blocks.
+    Encoder backbone built from CustomDoubleConv blocks.
+    Works as a Wavelet Double Conv Backbone: 4 stages of downsampling with CustomDoubleConv feature extraction.
     Outputs FPN-ready multi-scale feature maps P3, P4, P5.
  
     Architecture:
@@ -255,22 +256,22 @@ class WaveletBackbone(nn.Module):
         Stem  Conv3x3 stride-2  64ch              → H/2
           │
           ▼
-        Stage1  WaveletDoubleConv  64  → 128      → H/2
+        Stage1  CustomDoubleConv  64  → 128      → H/2
         MaxPool2d                                  → H/4
           │
           ▼
-        Stage2  WaveletDoubleConv  128 → 256      → H/4
-          ├──► P3  (1×1 proj → out_channels[0])   stride /8
+        Stage2  CustomDoubleConv  128 → 256      → H/4
+          ├──► P3  (1×1 proj → out_channels[0])   stride /4
         MaxPool2d                                  → H/8
           │
           ▼
-        Stage3  WaveletDoubleConv  256 → 512      → H/8
-          ├──► P4  (1×1 proj → out_channels[1])   stride /16
+        Stage3  CustomDoubleConv  256 → 512      → H/8
+          ├──► P4  (1×1 proj → out_channels[1])   stride /8
         MaxPool2d                                  → H/16
           │
           ▼
-        Stage4  WaveletDoubleConv  512 → 1024     → H/16
-          └──► P5  (1×1 proj → out_channels[2])   stride /32
+        Stage4  CustomDoubleConv  512 → 1024     → H/16
+          └──► P5  (1×1 proj → out_channels[2])   stride /16
  
     Args:
         c1          (int)  : Input image channels. Default 3 (RGB).
@@ -281,11 +282,13 @@ class WaveletBackbone(nn.Module):
     def __init__(
         self,
         c1:           int   = 3,
+        c2:           int   = 1024,
         out_channels: tuple = (256, 512, 1024),
         reduction:    int   = 4,
     ):
         super().__init__()
- 
+        self.c2 = c2
+
         # ── Stem: initial stride-2 conv (no wavelet — input may be odd-sized) ─
         self.stem = nn.Sequential(
             nn.Conv2d(c1, 64, kernel_size=3, stride=2, padding=1, bias=False),
@@ -294,17 +297,17 @@ class WaveletBackbone(nn.Module):
         )                                                   # → H/2, 64ch
  
         # ── Encoder stages ───────────────────────────────────────────────────
-        self.stage1 = WaveletDoubleConv(64,  128, reduction)
+        self.stage1 = CustomDoubleConv(64,  128, reduction)
         self.down1  = nn.MaxPool2d(2)                       # → H/4
- 
-        self.stage2 = WaveletDoubleConv(128, 256, reduction)
+
+        self.stage2 = CustomDoubleConv(128, 256, reduction)
         self.down2  = nn.MaxPool2d(2)                       # → H/8
- 
-        self.stage3 = WaveletDoubleConv(256, 512, reduction)
+
+        self.stage3 = CustomDoubleConv(256, 512, reduction)
         self.down3  = nn.MaxPool2d(2)                       # → H/16
- 
-        self.stage4 = WaveletDoubleConv(512, 1024, reduction)
-                                                            # → H/32
+
+        self.stage4 = CustomDoubleConv(512, 1024, reduction)
+                                                            # → H/16
  
         # ── Lateral 1×1 projections to FPN channel targets ──────────────────
         self.p3_proj = nn.Conv2d(256,  out_channels[0], kernel_size=1)
@@ -317,9 +320,9 @@ class WaveletBackbone(nn.Module):
             x: (B, c1, H, W)
         Returns:
             [P3, P4, P5]
-              P3: (B, out_channels[0], H/8,  W/8)
-              P4: (B, out_channels[1], H/16, W/16)
-              P5: (B, out_channels[2], H/32, W/32)
+              P3: (B, out_channels[0], H/4,  W/4)
+              P4: (B, out_channels[1], H/8,  W/8)
+              P5: (B, out_channels[2], H/16, W/16)
         """
         x  = self.stem(x)       # (B,  64, H/2,  W/2)
  
@@ -335,58 +338,58 @@ class WaveletBackbone(nn.Module):
         p5 = self.stage4(x)     # (B,1024, H/16, W/16) ← P5 source
  
         return [
-            self.p3_proj(p3),   # (B, out_channels[0], H/8,  W/8)
-            self.p4_proj(p4),   # (B, out_channels[1], H/16, W/16)
-            self.p5_proj(p5),   # (B, out_channels[2], H/32, W/32)
+            self.p3_proj(p3),   # (B, out_channels[0], H/4,  W/4)
+            self.p4_proj(p4),   # (B, out_channels[1], H/8,  W/8)
+            self.p5_proj(p5),   # (B, out_channels[2], H/16, W/16)
         ]
  
-# copied from specs
-class CustomDoubleConv(nn.Module):
-    def __init__(self, c1: int, c2: int):
-        super().__init__()
-        self.block = nn.Sequential(
-            nn.Conv2d(c1, c2, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(c2),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(c2, c2, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(c2),
-            nn.ReLU(inplace=True),
-        )
-    def forward(self, x: torch.Tensor)-> torch.Tensor:
-        return self.block(x)
+# # copied from specs
+# class CustomDoubleConv(nn.Module):
+#     def __init__(self, c1: int, c2: int):
+#         super().__init__()
+#         self.block = nn.Sequential(
+#             nn.Conv2d(c1, c2, kernel_size=3, padding=1, bias=False),
+#             nn.BatchNorm2d(c2),
+#             nn.ReLU(inplace=True),
+#             nn.Conv2d(c2, c2, kernel_size=3, padding=1, bias=False),
+#             nn.BatchNorm2d(c2),
+#             nn.ReLU(inplace=True),
+#         )
+#     def forward(self, x: torch.Tensor)-> torch.Tensor:
+#         return self.block(x)
 
-class DoubleConvBackbone(nn.Module):
-    def __init__(self, c1: int, c2: int = 1024, out_channels=(256, 512, 1024)):
-        super().__init__()
-        self.stem = nn.Sequential(
-            nn.Conv2d(c1, 64, kernel_size=3, stride=2, padding=1, bias=False),
-            nn.BatchNorm2d(64),
-            nn.ReLU(inplace=True),
-        )
+# class DoubleConvBackbone(nn.Module):
+#     def __init__(self, c1: int, c2: int = 1024, out_channels=(256, 512, 1024)):
+#         super().__init__()
+#         self.stem = nn.Sequential(
+#             nn.Conv2d(c1, 64, kernel_size=3, stride=2, padding=1, bias=False),
+#             nn.BatchNorm2d(64),
+#             nn.ReLU(inplace=True),
+#         )
 
-        self.stage1 = CustomDoubleConv(64, 128)
-        self.down1 = nn.MaxPool2d(2)
-        self.stage2 = CustomDoubleConv(128, 256)
-        self.down2 = nn.MaxPool2d(2)
-        self.stage3 = CustomDoubleConv(256, 512)
-        self.down3 = nn.MaxPool2d(2)
-        self.stage4 = CustomDoubleConv(512, 1024)
-        self.p3_proj = nn.Conv2d(256, out_channels[0], kernel_size=1)
-        self.p4_proj = nn.Conv2d(512, out_channels[1], kernel_size=1)
-        self.p5_proj = nn.Conv2d(1024, out_channels[2], kernel_size=1)
-        self.c2 = c2
+#         self.stage1 = CustomDoubleConv(64, 128)
+#         self.down1 = nn.MaxPool2d(2)
+#         self.stage2 = CustomDoubleConv(128, 256)
+#         self.down2 = nn.MaxPool2d(2)
+#         self.stage3 = CustomDoubleConv(256, 512)
+#         self.down3 = nn.MaxPool2d(2)
+#         self.stage4 = CustomDoubleConv(512, 1024)
+#         self.p3_proj = nn.Conv2d(256, out_channels[0], kernel_size=1)
+#         self.p4_proj = nn.Conv2d(512, out_channels[1], kernel_size=1)
+#         self.p5_proj = nn.Conv2d(1024, out_channels[2], kernel_size=1)
+#         self.c2 = c2
 
-    def forward(self, x: torch.Tensor):
-        x = self.stem(x)
-        x = self.stage1(x)
-        x = self.down1(x)
-        p3 = self.stage2(x)
-        x = self.down2(p3)
-        p4 = self.stage3(x)
-        x = self.down3(p4)
-        2
-        p5 = self.stage4(x)
-        return [self.p3_proj(p3), self.p4_proj(p4), self.p5_proj(p5)]
+#     def forward(self, x: torch.Tensor):
+#         x = self.stem(x)
+#         x = self.stage1(x)
+#         x = self.down1(x)
+#         p3 = self.stage2(x)
+#         x = self.down2(p3)
+#         p4 = self.stage3(x)
+#         x = self.down3(p4)
+#         2
+#         p5 = self.stage4(x)
+#         return [self.p3_proj(p3), self.p4_proj(p4), self.p5_proj(p5)]
 
 
 class DFL(nn.Module):
