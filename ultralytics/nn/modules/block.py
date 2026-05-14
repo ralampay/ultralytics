@@ -261,17 +261,18 @@ class DoubleConvBackbone(nn.Module):
           │
           ▼
         Stage2  CustomDoubleConv  128 → 256      → H/4
-          ├──► P3  (1×1 proj → out_channels[0])   stride /4
         MaxPool2d                                  → H/8
           │
           ▼
         Stage3  CustomDoubleConv  256 → 512      → H/8
-          ├──► P4  (1×1 proj → out_channels[1])   stride /8
+          ├──► P3  (1×1 proj → out_channels[0])   stride /8
         MaxPool2d                                  → H/16
           │
           ▼
         Stage4  CustomDoubleConv  512 → 1024     → H/16
-          └──► P5  (1×1 proj → out_channels[2])   stride /16
+          ├──► P4  (1×1 proj → out_channels[1])   stride /16
+        MaxPool2d                                  → H/32
+          └──► P5  (1×1 proj → out_channels[2])   stride /32
  
     Args:
         c1          (int)  : Input image channels. Default 3 (RGB).
@@ -307,11 +308,11 @@ class DoubleConvBackbone(nn.Module):
         self.down3  = nn.MaxPool2d(2)                       # → H/16
 
         self.stage4 = CustomDoubleConv(512, 1024, reduction)
-                                                            # → H/16
- 
+        self.down4  = nn.MaxPool2d(2)                       # → H/32
+
         # ── Lateral 1×1 projections to FPN channel targets ──────────────────
-        self.p3_proj = nn.Conv2d(256,  out_channels[0], kernel_size=1)
-        self.p4_proj = nn.Conv2d(512,  out_channels[1], kernel_size=1)
+        self.p3_proj = nn.Conv2d(512,  out_channels[0], kernel_size=1)
+        self.p4_proj = nn.Conv2d(1024, out_channels[1], kernel_size=1)
         self.p5_proj = nn.Conv2d(1024, out_channels[2], kernel_size=1)
  
     def forward(self, x: torch.Tensor):
@@ -320,27 +321,28 @@ class DoubleConvBackbone(nn.Module):
             x: (B, c1, H, W)
         Returns:
             [P3, P4, P5]
-              P3: (B, out_channels[0], H/4,  W/4)
-              P4: (B, out_channels[1], H/8,  W/8)
-              P5: (B, out_channels[2], H/16, W/16)
+              P3: (B, out_channels[0], H/8,  W/8)
+              P4: (B, out_channels[1], H/16, W/16)
+              P5: (B, out_channels[2], H/32, W/32)
         """
         x  = self.stem(x)       # (B,  64, H/2,  W/2)
- 
+
         x  = self.stage1(x)     # (B, 128, H/2,  W/2)
         x  = self.down1(x)      # (B, 128, H/4,  W/4)
- 
-        p3 = self.stage2(x)     # (B, 256, H/4,  W/4)  ← P3 source
-        x  = self.down2(p3)     # (B, 256, H/8,  W/8)
- 
-        p4 = self.stage3(x)     # (B, 512, H/8,  W/8)  ← P4 source
-        x  = self.down3(p4)     # (B, 512, H/16, W/16)
- 
-        p5 = self.stage4(x)     # (B,1024, H/16, W/16) ← P5 source
- 
+
+        x  = self.stage2(x)     # (B, 256, H/4,  W/4)
+        x  = self.down2(x)      # (B, 256, H/8,  W/8)
+
+        p3 = self.stage3(x)     # (B, 512, H/8,  W/8)  ← P3 source
+        x  = self.down3(p3)     # (B, 512, H/16, W/16)
+
+        p4 = self.stage4(x)     # (B,1024, H/16, W/16) ← P4 source
+        p5 = self.down4(p4)     # (B,1024, H/32, W/32) ← P5 source
+
         return [
-            self.p3_proj(p3),   # (B, out_channels[0], H/4,  W/4)
-            self.p4_proj(p4),   # (B, out_channels[1], H/8,  W/8)
-            self.p5_proj(p5),   # (B, out_channels[2], H/16, W/16)
+            self.p3_proj(p3),   # (B, out_channels[0], H/8,  W/8)
+            self.p4_proj(p4),   # (B, out_channels[1], H/16, W/16)
+            self.p5_proj(p5),   # (B, out_channels[2], H/32, W/32)
         ]
  
 # # copied from specs
