@@ -31,6 +31,12 @@ print("\n======Testing Dummy Img=====")
 try:
     dummy_input = torch.randn(1, 3, 640, 640) #fake image
     output = model.model(dummy_input)
-    print(f"Forward pass successful! Output type: {type(output)}")
+    print(f"Forward pass is successful. Output type: {type(output)}")
 except Exception as e:
-    print(f"Error during forward pass: {e}")
+    print(f"Error during forward pass {e}")
+
+# confirm DoubleConvBackbone appears
+print("\n======Confirming DoubleConvBackbone=====")
+for name, module in model.model.named_modules():
+    if "DoubleConvBackbone" in str(type(module)):
+        print(f"DoubleConvBackbone found. Layer name: {name} is a DoubleConvBackbone")
