@@ -1,81 +1,62 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-remote="${REMOTE:-upstream}"
-branch="${1:-$(git branch --show-current)}"
-commit_message="${COMMIT_MESSAGE:-chore: checkpoint before rebasing from the latest $remote release}"
+upstream_remote="${UPSTREAM_REMOTE:-upstream}"
+fork_remote="${FORK_REMOTE:-origin}"
+base_branch="${BASE_BRANCH:-main}"
+commit_message="${COMMIT_MESSAGE:-bump}"
+branch="$(git branch --show-current)"
 
-print_repo_version() {
-  local repo_version git_version
-  repo_version="$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' ultralytics/__init__.py | head -n 1 || true)"
-  git_version="$(git describe --tags --always --dirty 2>/dev/null || git rev-parse --short HEAD 2>/dev/null || true)"
+if [[ -z "$branch" ]]; then
+  echo "error: must be run from a local branch" >&2
+  exit 1
+fi
 
-  echo "Current repository version:"
-  if [[ -n "$repo_version" ]]; then
-    echo "Package version: $repo_version"
+if [[ "$branch" == "$base_branch" ]]; then
+  echo "error: refusing to update '$base_branch' directly; run this from a feature or sync branch" >&2
+  exit 1
+fi
+
+for remote in "$fork_remote" "$upstream_remote"; do
+  if ! git remote get-url "$remote" >/dev/null 2>&1; then
+    echo "error: git remote '$remote' is not configured" >&2
+    exit 1
   fi
-  if [[ -n "$git_version" ]]; then
-    echo "Git version: $git_version"
-  fi
-}
+done
 
-trap print_repo_version EXIT
-
-if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-  echo "error: must be run inside a git repository" >&2
-  exit 1
-fi
-
-if ! git remote get-url "$remote" >/dev/null 2>&1; then
-  echo "error: git remote '$remote' is not configured" >&2
-  exit 1
-fi
-
-if ! git show-ref --verify --quiet "refs/heads/$branch"; then
-  echo "error: local branch '$branch' does not exist" >&2
-  exit 1
-fi
-
-current_branch="$(git branch --show-current)"
-has_tracked_changes=0
-has_untracked_files=0
-
-if ! git diff --quiet || ! git diff --cached --quiet; then
-  has_tracked_changes=1
-fi
-
-if [[ -n "$(git ls-files --others --exclude-standard)" ]]; then
-  has_untracked_files=1
-fi
-
-if (( has_tracked_changes || has_untracked_files )); then
-  echo "Committing current changes on $current_branch..."
+if ! git diff --quiet || ! git diff --cached --quiet || [[ -n "$(git ls-files --others --exclude-standard)" ]]; then
+  echo "Committing local changes on $branch..."
   git add -A
   git commit -m "$commit_message"
 fi
 
-echo "Fetching $remote..."
-git fetch --prune --tags "$remote"
+echo "Fetching $fork_remote and $upstream_remote..."
+git fetch --prune "$fork_remote"
+git fetch --prune --tags "$upstream_remote"
 
-latest_release_tag="$(git tag --list 'v*' --sort=-version:refname | head -n 1)"
-
-if [[ -z "$latest_release_tag" ]]; then
-  echo "error: no release tags matching 'v*' were found after fetching $remote" >&2
+upstream_branch="$upstream_remote/$base_branch"
+if ! git show-ref --verify --quiet "refs/remotes/$upstream_branch"; then
+  echo "error: remote branch '$upstream_branch' does not exist" >&2
   exit 1
 fi
 
-if [[ "$current_branch" != "$branch" ]]; then
-  echo "Switching to $branch..."
-  git switch "$branch"
-fi
+echo "Merging $upstream_branch into $branch..."
+git merge --no-edit -m "$commit_message" "$upstream_branch"
 
-echo "Rebasing $branch onto latest $remote release $latest_release_tag..."
-git rebase "$latest_release_tag"
-
-if ! git merge-base --is-ancestor "$latest_release_tag" HEAD; then
-  echo "error: rebase completed, but HEAD is not based on $latest_release_tag" >&2
+if ! git merge-base --is-ancestor "$upstream_branch" HEAD; then
+  echo "error: HEAD does not contain $upstream_branch after merge" >&2
   exit 1
 fi
 
-echo "Rebase successful."
-echo "Base release: $latest_release_tag"
+echo "Pushing $branch to $fork_remote..."
+git push -u "$fork_remote" "$branch"
+
+fork_url="$(git remote get-url "$fork_remote")"
+fork_path="${fork_url#git@github.com:}"
+fork_path="${fork_path#https://github.com/}"
+fork_path="${fork_path%.git}"
+
+echo "Sync branch pushed successfully."
+if [[ "$fork_path" != "$fork_url" ]]; then
+  echo "Open a pull request: https://github.com/$fork_path/compare/$base_branch...$branch?expand=1"
+fi
