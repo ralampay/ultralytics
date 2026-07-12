@@ -1791,6 +1791,14 @@ def _resolve_efficient_dim(dim: int) -> int:
     return reduced_dim
 
 
+def _resolve_drax_fusion_mode(fusion_mode: str) -> str:
+    """Normalize and validate a Drax feature-fusion mode."""
+    normalized = fusion_mode.strip().lower()
+    if normalized not in {"average", "sknet"}:
+        raise ValueError(f"Unsupported Drax fusion mode '{fusion_mode}'. Choose 'average' or 'sknet'.")
+    return normalized
+
+
 class DraxBlock(nn.Module):
     """Conv-attention hybrid mixer copied from the sibling MLX experiments."""
 
@@ -1801,12 +1809,25 @@ class DraxBlock(nn.Module):
         use_attention: bool = True,
         efficient: bool = True,
         drop_path: float = 0.0,
+        fusion_mode: str = "average",
     ) -> None:
         super().__init__()
         self.use_attention = use_attention
         self.efficient = efficient
+        self.fusion_mode = _resolve_drax_fusion_mode(fusion_mode)
         self.convnext = ConvNeXtBlock(dim)
         self.drop_path = DropPath(drop_path)
+
+        if use_attention and self.fusion_mode == "sknet":
+            fusion_dim = max(32, dim // 16)
+            self.fusion_gate = nn.Sequential(
+                nn.AdaptiveAvgPool2d(1),
+                nn.Conv2d(dim, fusion_dim, kernel_size=1),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(fusion_dim, 2 * dim, kernel_size=1),
+            )
+        else:
+            self.fusion_gate = None
 
         if not use_attention:
             self.attention = None
@@ -1835,8 +1856,18 @@ class DraxBlock(nn.Module):
         else:
             attention_delta = self.attention(x) - x
 
-        fused_delta = 0.5 * (conv_delta + attention_delta)
+        fused_delta = self._fuse_deltas(conv_delta, attention_delta)
         return x + self.drop_path(fused_delta)
+
+    def _fuse_deltas(self, conv_delta: torch.Tensor, attention_delta: torch.Tensor) -> torch.Tensor:
+        """Combine branch deltas with fixed averaging or SKNet-style channel selection."""
+        if self.fusion_mode == "average":
+            return 0.5 * (conv_delta + attention_delta)
+
+        batch_size, channels, _, _ = conv_delta.shape
+        logits = self.fusion_gate(conv_delta + attention_delta)
+        weights = logits.reshape(batch_size, 2, channels, 1, 1).softmax(dim=1)
+        return weights[:, 0] * conv_delta + weights[:, 1] * attention_delta
 
 
 class BasicResidualBlock(nn.Module):
@@ -1899,6 +1930,7 @@ class DraxResidualBlock(nn.Module):
         downsample: nn.Module | None = None,
         use_attention: bool = True,
         efficient_attention: bool = True,
+        fusion_mode: str = "average",
     ) -> None:
         super().__init__()
         self.conv1 = nn.Conv2d(
@@ -1915,6 +1947,7 @@ class DraxResidualBlock(nn.Module):
             dim=out_channels,
             use_attention=use_attention,
             efficient=efficient_attention,
+            fusion_mode=fusion_mode,
         )
         self.proj = nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=1, padding=1, bias=False)
         self.bn2 = nn.BatchNorm2d(out_channels)
@@ -1950,6 +1983,7 @@ class DraxNet(nn.Module):
         stage_block_types: Sequence[str] = ("basic", "basic", "basic", "drax"),
         use_attention: bool = True,
         efficient_attention: bool = True,
+        fusion_mode: str = "average",
         out_channels: Sequence[int] = (256, 512, 1024),
         zero_init_residual: bool = False,
     ) -> None:
@@ -1965,6 +1999,7 @@ class DraxNet(nn.Module):
         self.inplanes = 64
         self.use_attention = use_attention
         self.efficient_attention = efficient_attention
+        self.fusion_mode = _resolve_drax_fusion_mode(fusion_mode)
         self.conv1 = nn.Conv2d(c1, self.inplanes, kernel_size=7, stride=2, padding=3, bias=False)
         self.bn1 = nn.BatchNorm2d(self.inplanes)
         self.relu = nn.ReLU(inplace=True)
@@ -2020,6 +2055,7 @@ class DraxNet(nn.Module):
                 downsample=downsample,
                 use_attention=self.use_attention,
                 efficient_attention=self.efficient_attention,
+                fusion_mode=self.fusion_mode,
             )
             if block is DraxResidualBlock
             else block(self.inplanes, planes, stride=stride, downsample=downsample)
@@ -2032,6 +2068,7 @@ class DraxNet(nn.Module):
                     planes,
                     use_attention=self.use_attention,
                     efficient_attention=self.efficient_attention,
+                    fusion_mode=self.fusion_mode,
                 )
                 if block is DraxResidualBlock
                 else block(self.inplanes, planes)

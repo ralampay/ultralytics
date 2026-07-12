@@ -1,13 +1,13 @@
 # Extended Backbones
 
-This repository can expose non-standard backbones to Ultralytics YAMLs as native modules. The `draxnet-yolo26` example added here shows the pattern for adapting an external backbone into a YOLO detection model without changing the rest of the training and inference stack.
+This repository can expose non-standard backbones to Ultralytics YAMLs as native modules. The DraxNet YOLO26 examples show the pattern for adapting an external backbone into a YOLO detection model without changing the rest of the training and inference stack.
 
 ## What Was Added
 
 - `DraxBlock` was copied from the sibling MLX project and added to [ultralytics/nn/modules/block.py](/home/ralampay/workspace/ultralytics/ultralytics/nn/modules/block.py).
 - `DraxResidualBlock` and `DraxNet` were added beside it so the Drax mixer can be used as a detection backbone.
 - `DraxNet` was exported through [ultralytics/nn/modules/__init__.py](/home/ralampay/workspace/ultralytics/ultralytics/nn/modules/__init__.py) and registered in [ultralytics/nn/tasks.py](/home/ralampay/workspace/ultralytics/ultralytics/nn/tasks.py) as a multi-output backbone module.
-- A new model config lives at [ultralytics/cfg/models/ext/draxnet-yolo26.yaml](/home/ralampay/workspace/ultralytics/ultralytics/cfg/models/ext/draxnet-yolo26.yaml).
+- Two model configs select fixed-average or SKNet-style adaptive fusion: `draxnet-ave-yolo26.yml` and `draxnet-sknet-yolo26.yml` under `ultralytics/cfg/models/ext/`.
 
 ## Source Backbone
 
@@ -47,14 +47,14 @@ image
 
 ## YAML Pattern
 
-The backbone portion of [ultralytics/cfg/models/ext/draxnet-yolo26.yaml](/home/ralampay/workspace/ultralytics/ultralytics/cfg/models/ext/draxnet-yolo26.yaml) is:
+The two configurations share this backbone pattern, with the `fusion_mode` argument set to either `average` or `sknet`:
 
 ```yaml
 backbone:
-  - [-1, 1, DraxNet, [1024, [2, 2, 2, 2], [basic, basic, basic, drax], True, True, [256, 512, 1024]]]
-  - [0, 1, Index, [256, 0]]
-  - [0, 1, Index, [512, 1]]
-  - [0, 1, Index, [1024, 2]]
+    - [-1, 1, DraxNet, [1024, [2, 2, 2, 2], [basic, basic, basic, drax], True, True, sknet, [256, 512, 1024]]]
+    - [0, 1, Index, [256, 0]]
+    - [0, 1, Index, [512, 1]]
+    - [0, 1, Index, [1024, 2]]
 ```
 
 Argument meaning:
@@ -63,6 +63,7 @@ Argument meaning:
 - `[2, 2, 2, 2]`: ResNet-18 stage repeat layout
 - `[basic, basic, basic, drax]`: per-stage block selection
 - `True, True`: enable attention and efficient attention inside `DraxBlock`
+- `average` or `sknet`: fixed `0.5 / 0.5` fusion or input-dependent channel-wise fusion
 - `[256, 512, 1024]`: projected P3/P4/P5 channel sizes consumed by the YOLO head
 
 ## Extending Another Backbone
